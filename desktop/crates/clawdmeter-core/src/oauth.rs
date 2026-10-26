@@ -166,6 +166,33 @@ fn window(v: Option<&Value>, pct_key: &str) -> Option<Window> {
     Some(Window { pct: pct.round().max(0.0) as u32, resets_at })
 }
 
+/// A seat with no plan windows (some Enterprise ones) that reports its cap
+/// only as the top-level `spend` block, with `limits` empty. A Pro/Max body
+/// carries the same block for extra usage, so it counts only without
+/// `five_hour` and `seven_day`. No reset time is given.
+fn plan_free_spend(v: &Value) -> Option<Spend> {
+    if v.get("five_hour").is_some_and(|w| !w.is_null()) || v.get("seven_day").is_some_and(|w| !w.is_null()) {
+        return None;
+    }
+    let s = v.get("spend")?;
+    if s.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let pct = s.get("percent")?.as_f64()?;
+    let extra = v.get("extra_usage");
+    let has = |k: &str| extra.and_then(|x| x.get(k)).is_some_and(|x| !x.is_null());
+    let period = if has("daily") {
+        Some(SpendPeriod::Daily)
+    } else if has("weekly") {
+        Some(SpendPeriod::Weekly)
+    } else if has("monthly_limit") {
+        Some(SpendPeriod::Monthly)
+    } else {
+        None
+    };
+    Some(Spend { pct: pct.round().max(0.0) as u32, resets_at: None, period })
+}
+
 /// Read a 200 body. A five-hour window whose reset has passed (or with no
 /// reset) means the window isn't running.
 pub fn parse_usage_json(body: &str, now: DateTime<Utc>) -> Result<UsageReading, UsageError> {
@@ -194,7 +221,8 @@ pub fn parse_usage_json(body: &str, now: DateTime<Utc>) -> Result<UsageReading, 
                 _ => None,
             };
             Some(Spend { pct: w.pct, resets_at: w.resets_at, period })
-        });
+        })
+        .or_else(|| plan_free_spend(&v));
     let overage = v.get("extra_usage").and_then(|x| x.get("is_enabled")).and_then(Value::as_bool).unwrap_or(false)
         && v.get("extra_usage").and_then(|x| x.get("used_credits")).and_then(Value::as_f64).is_some_and(|c| c > 0.0);
     let has_any = v.get("five_hour").is_some_and(|w| !w.is_null()) || week.is_some() || spend.is_some();
@@ -344,6 +372,21 @@ mod tests {
         assert!(r.is_spend_only());
         assert_eq!(r.spend.as_ref().map(|s| (s.pct, s.period)), Some((54, Some(SpendPeriod::Monthly))));
         assert_eq!(r.session_pct(), 54);
+    }
+
+    #[test]
+    fn enterprise_seat_with_only_a_spend_block() {
+        // Trimmed from a real Enterprise answer: no windows, `limits` empty.
+        let body = r#"{"five_hour":null,"seven_day":null,
+            "extra_usage":{"is_enabled":true,"monthly_limit":9000,"used_credits":5629.0,"utilization":62.54,"currency":"USD","daily":null,"weekly":null},
+            "limits":[],"spend":{"percent":63,"severity":"normal","enabled":true}}"#;
+        let r = parse_usage_json(body, at("2026-10-26T12:00:00Z")).unwrap();
+        assert!(r.is_spend_only());
+        assert_eq!(r.spend.as_ref().map(|s| (s.pct, s.period)), Some((63, Some(SpendPeriod::Monthly))));
+        // A Pro/Max body with extra usage keeps its windows and no spend cap.
+        let pro = r#"{"five_hour":{"utilization":10,"resets_at":"2026-10-26T14:00:00Z"},"seven_day":{"utilization":5,"resets_at":"2026-10-30T00:00:00Z"},
+            "limits":[],"spend":{"percent":63,"enabled":true}}"#;
+        assert!(parse_usage_json(pro, at("2026-10-26T12:00:00Z")).unwrap().spend.is_none());
     }
 
     #[test]

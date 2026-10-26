@@ -69,10 +69,12 @@ Continuity rules, as the code enforces them:
   and comes back.
 - The screen never cuts. The face rises over the meters only once he's gone,
   and drops back onto them before he walks on.
-- The normal status line rotates Claude Code's whimsical thinking verbs as
-  the all-is-well indicator. This is the owner's chosen behavior, not an
-  activity report. Keep the spinner and ellipsis. Disconnected is "Waiting";
-  minimal mode uses fixed status text instead of rotating verbs.
+- The status line rotates Claude Code's whimsical thinking verbs, with the
+  spinner and ellipsis, only while Claude is working (`signals_working()`:
+  tool calls in the last minute, or a prompt with no Stop after it within
+  10 minutes). Otherwise it holds still on "Idle", or "Connected" when no
+  hooks have been seen and the device can't tell. Disconnected is
+  "Waiting"; minimal mode uses fixed status text instead of rotating verbs.
 - Stale data keeps the one-Clawd rule. When the link is up but no fresh usage
   has landed for `DATA_FRESH_MS` (90 s), or the daemon sent `{"ok":false}`,
   the meters stay where they are at 40 % opacity (LVGL `opa`, which scales the

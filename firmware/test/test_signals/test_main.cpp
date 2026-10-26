@@ -72,6 +72,24 @@ static void test_seq_restart_still_fires(void) {
     TEST_ASSERT_TRUE(signals_ingest_at(&d, 2000).event_fired);
 }
 
+// Working = tools in the last minute, or a prompt with no Stop after it
+// (the baseline event counts: it says what Claude is doing now).
+static void test_working(void) {
+    UsageData d = parse("{\"s\":1,\"ok\":true}");
+    signals_ingest_at(&d, 1000);
+    TEST_ASSERT_FALSE(signals_working_at(1000));           // no hooks
+    d = parse("{\"s\":1,\"e\":\"p\",\"es\":3,\"a\":0,\"ok\":true}");
+    signals_ingest_at(&d, 2000);
+    TEST_ASSERT_TRUE(signals_working_at(2000));            // prompt open
+    TEST_ASSERT_FALSE(signals_working_at(2000 + SIGNALS_PROMPT_OPEN_MS));
+    d = parse("{\"s\":1,\"e\":\"s\",\"es\":4,\"a\":0,\"ok\":true}");
+    signals_ingest_at(&d, 3000);
+    TEST_ASSERT_FALSE(signals_working_at(3000));           // stopped
+    d = parse("{\"s\":1,\"a\":2,\"rp\":1,\"ok\":true}");
+    signals_ingest_at(&d, 4000);
+    TEST_ASSERT_TRUE(signals_working_at(4000));            // tools running
+}
+
 static void test_activity_lift_in_group(void) {
     UsageData d = parse("{\"s\":10,\"a\":3}");
     SignalsUpdate u = signals_ingest_at(&d, 1000);
@@ -128,6 +146,7 @@ int main(void) {
     RUN_TEST(test_first_seq_is_baseline_then_fires_once);
     RUN_TEST(test_event_in_replay_fires_once);
     RUN_TEST(test_seq_restart_still_fires);
+    RUN_TEST(test_working);
     RUN_TEST(test_activity_lift_in_group);
     RUN_TEST(test_replay_skips_rate_but_keeps_activity);
     RUN_TEST(test_session_reset_through_signals);

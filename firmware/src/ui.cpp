@@ -15,6 +15,7 @@
 #include "layout.h"
 #include "ui_text.h"
 #include "pace.h"
+#include "signals.h"
 
 // Where everything goes, from the panel's shape (layout.h). Computed once in
 // ui_init() and treated as const for the rest of the program; a new panel
@@ -67,6 +68,14 @@ static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of spending limit"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
 static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
+
+// ---- Two accounts at once (UsageData.split): split_group takes
+// usage_group's place, one half per account, where L.split says.
+struct SplitRow  { lv_obj_t *pill, *bar, *tick, *pct, *reset; };
+struct SplitHalf { lv_obj_t *panel, *label; SplitRow row[2]; };
+static lv_obj_t* split_group = nullptr;
+static SplitHalf split_half[2];
+static bool      split_view = false;   // the last payload carried two accounts
 
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
@@ -186,11 +195,11 @@ static lv_color_t bar_color(float used_pct, int reset_mins, int window_mins) {
     return pct_color(used_pct);
 }
 
-// A line inside the bar, exactly its height, drawn over the fill.
-static lv_obj_t* make_pace_tick(lv_obj_t* bar) {
+// A line inside the bar, exactly its height `bar_h`, drawn over the fill.
+static lv_obj_t* make_pace_tick(lv_obj_t* bar, int bar_h) {
     lv_obj_t* tick = lv_obj_create(bar);
     lv_obj_remove_style_all(tick);
-    lv_obj_set_size(tick, L.bar_h >= 20 ? 3 : 2, L.bar_h);
+    lv_obj_set_size(tick, bar_h >= 20 ? 3 : 2, bar_h);
     lv_obj_set_style_bg_color(tick, COL_TEXT, 0);
     lv_obj_set_style_bg_opa(tick, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(tick, 1, 0);
@@ -231,18 +240,18 @@ static void format_reset_time(int mins, char* buf, size_t len, const char* none)
     }
 }
 
-static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
+static lv_obj_t* make_panel(lv_obj_t* parent, const LayoutRect& r, int pad_x, int pad_y) {
     lv_obj_t* panel = lv_obj_create(parent);
-    lv_obj_set_pos(panel, x, y);
-    lv_obj_set_size(panel, w, h);
+    lv_obj_set_pos(panel, r.x, r.y);
+    lv_obj_set_size(panel, r.w, r.h);
     lv_obj_set_style_bg_color(panel, COL_PANEL, 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(panel, 8, 0);
     lv_obj_set_style_border_width(panel, 0, 0);
-    lv_obj_set_style_pad_left(panel, L.pad_x, 0);
-    lv_obj_set_style_pad_right(panel, L.pad_x, 0);
-    lv_obj_set_style_pad_top(panel, L.pad_y, 0);
-    lv_obj_set_style_pad_bottom(panel, L.pad_y, 0);
+    lv_obj_set_style_pad_left(panel, pad_x, 0);
+    lv_obj_set_style_pad_right(panel, pad_x, 0);
+    lv_obj_set_style_pad_top(panel, pad_y, 0);
+    lv_obj_set_style_pad_bottom(panel, pad_y, 0);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(panel, LV_OBJ_FLAG_EVENT_BUBBLE);
     return panel;
@@ -272,19 +281,33 @@ static void init_icon_dsc_rgb565a8(lv_image_dsc_t* dsc, int w, int h, const uint
     dsc->data_size = w * h * 3;
 }
 
-static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
+static lv_obj_t* make_pill(lv_obj_t* parent, const char* text, const lv_font_t* font,
+                           int pad_x, int pad_y) {
     lv_obj_t* lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
-    lv_obj_set_style_text_font(lbl, L.pill_font, 0);
+    lv_obj_set_style_text_font(lbl, font, 0);
     lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
     lv_obj_set_style_bg_color(lbl, COL_BAR_BG, 0);
     lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(lbl, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_left(lbl, L.pill_pad_x, 0);
-    lv_obj_set_style_pad_right(lbl, L.pill_pad_x, 0);
-    lv_obj_set_style_pad_top(lbl, L.pill_pad_y, 0);
-    lv_obj_set_style_pad_bottom(lbl, L.pill_pad_y, 0);
+    lv_obj_set_style_pad_left(lbl, pad_x, 0);
+    lv_obj_set_style_pad_right(lbl, pad_x, 0);
+    lv_obj_set_style_pad_top(lbl, pad_y, 0);
+    lv_obj_set_style_pad_bottom(lbl, pad_y, 0);
     return lbl;
+}
+
+// A transparent full-screen layer, toggled as one unit.
+static lv_obj_t* make_group(lv_obj_t* parent) {
+    lv_obj_t* g = lv_obj_create(parent);
+    lv_obj_set_size(g, L.w, L.h);
+    lv_obj_set_pos(g, 0, 0);
+    lv_obj_set_style_bg_opa(g, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(g, 0, 0);
+    lv_obj_set_style_pad_all(g, 0, 0);
+    lv_obj_clear_flag(g, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g, LV_OBJ_FLAG_EVENT_BUBBLE);
+    return g;
 }
 
 static void init_battery_icons(void) {
@@ -310,7 +333,7 @@ static void init_battery_icons(void) {
 static lv_obj_t* make_usage_panel(lv_obj_t* parent, const LayoutRect& r, const char* pill_text,
                                   lv_obj_t** out_pct, lv_obj_t** out_pill,
                                   lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, r.x, r.y, r.w, r.h);
+    lv_obj_t* panel = make_panel(parent, r, L.pad_x, L.pad_y);
 
     *out_pct = lv_label_create(panel);
     lv_label_set_text(*out_pct, "--%");
@@ -318,7 +341,7 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, const LayoutRect& r, const c
     lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
     lv_obj_set_pos(*out_pct, 0, 0);
 
-    *out_pill = make_pill(panel, pill_text);
+    *out_pill = make_pill(panel, pill_text, L.pill_font, L.pill_pad_x, L.pill_pad_y);
     lv_obj_align(*out_pill, LV_ALIGN_TOP_RIGHT, 0, 1);
 
     *out_bar = make_bar(panel, 0, L.bar_y, r.w - 2 * L.pad_x, L.bar_h);
@@ -330,6 +353,55 @@ static lv_obj_t* make_usage_panel(lv_obj_t* parent, const LayoutRect& r, const c
     lv_obj_set_pos(*out_reset, 0, L.reset_y);
 
     return panel;
+}
+
+static const char* split_default_label(int i) { return i == 0 ? "Account 1" : "Account 2"; }
+
+// One account's half: its name, then a row per window (pill, bar,
+// percentage) with the reset line under the bar where the layout has room.
+static void make_split_half(SplitHalf& h, const LayoutRect& r, int idx) {
+    const Layout::Split& S = L.split;
+    h.panel = make_panel(split_group, r, S.pad_x, S.pad_y);
+    const int inner_w = r.w - 2 * S.pad_x;
+
+    h.label = lv_label_create(h.panel);
+    lv_label_set_long_mode(h.label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(h.label, inner_w);
+    lv_label_set_text(h.label, split_default_label(idx));
+    lv_obj_set_style_text_font(h.label, S.label_font, 0);
+    lv_obj_set_style_text_color(h.label, COL_TEXT, 0);
+    lv_obj_set_pos(h.label, 0, 0);
+
+    const int bar_x = S.pill_w + LAYOUT_SPLIT_GAP;
+    const int bar_w = inner_w - S.pill_w - S.pct_w - 2 * LAYOUT_SPLIT_GAP;
+    for (int i = 0; i < 2; i++) {
+        SplitRow& row = h.row[i];
+        const int y = S.row_y[i];
+        row.pill = make_pill(h.panel, S.pills[i], S.row_font, S.pill_pad_x, 0);
+        lv_obj_set_width(row.pill, S.pill_w);
+        lv_obj_set_style_text_align(row.pill, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(row.pill, 0, y);
+
+        row.bar = make_bar(h.panel, bar_x, y + (S.row_h - S.bar_h) / 2, bar_w, S.bar_h);
+        row.tick = make_pace_tick(row.bar, S.bar_h);
+
+        row.pct = lv_label_create(h.panel);
+        lv_label_set_text(row.pct, "--%");
+        lv_obj_set_style_text_font(row.pct, S.row_font, 0);
+        lv_obj_set_style_text_color(row.pct, COL_TEXT, 0);
+        lv_obj_set_style_text_align(row.pct, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_width(row.pct, S.pct_w);
+        lv_obj_set_pos(row.pct, inner_w - S.pct_w, y);
+
+        row.reset = nullptr;
+        if (S.reset_font) {
+            row.reset = lv_label_create(h.panel);
+            lv_label_set_text(row.reset, "---");
+            lv_obj_set_style_text_font(row.reset, S.reset_font, 0);
+            lv_obj_set_style_text_color(row.reset, COL_DIM, 0);
+            lv_obj_set_pos(row.reset, bar_x, y + S.row_h);
+        }
+    }
 }
 
 // Pairing hint — shown when disconnected so the screen isn't empty and the
@@ -422,14 +494,7 @@ static void init_usage_screen(lv_obj_t* scr) {
 
     // Usage panels (shown when connected) live in a transparent full-size group
     // so they can be toggled against the pairing hint as one unit.
-    usage_group = lv_obj_create(usage_container);
-    lv_obj_set_size(usage_group, L.w, L.h);
-    lv_obj_set_pos(usage_group, 0, 0);
-    lv_obj_set_style_bg_opa(usage_group, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(usage_group, 0, 0);
-    lv_obj_set_style_pad_all(usage_group, 0, 0);
-    lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(usage_group, LV_OBJ_FLAG_EVENT_BUBBLE);
+    usage_group = make_group(usage_container);
 
     panel_session = make_usage_panel(usage_group, L.card[0], L.pills[0],
                      &lbl_session_pct, &lbl_session_label,
@@ -461,8 +526,12 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
 
-    tick_session = make_pace_tick(bar_session);
-    tick_weekly  = make_pace_tick(bar_weekly);
+    tick_session = make_pace_tick(bar_session, L.bar_h);
+    tick_weekly  = make_pace_tick(bar_weekly, L.bar_h);
+
+    split_group = make_group(usage_container);
+    for (int i = 0; i < 2; i++) make_split_half(split_half[i], L.split.half[i], i);
+    lv_obj_add_flag(split_group, LV_OBJ_FLAG_HIDDEN);   // a split payload shows it
 
     build_pair_group(usage_container);
 
@@ -565,11 +634,75 @@ static void apply_bar_colors(const UsageData* data) {
     place_pace_tick(tick_weekly, pace_elapsed_pct(data->weekly_reset_mins, PACE_WEEK_MINS));
 }
 
+// One split row: `pct` < 0 shows "--%" and an empty bar.
+static void set_split_row(SplitRow& r, int pct, lv_color_t color, float elapsed_pct, const char* reset) {
+    if (pct < 0) lv_label_set_text(r.pct, "--%");
+    else         lv_label_set_text_fmt(r.pct, "%d%%", pct);
+    lv_bar_set_value(r.bar, pct < 0 ? 0 : pct, LV_ANIM_ON);
+    lv_obj_set_style_bg_color(r.bar, color, LV_PART_INDICATOR);
+    place_pace_tick(r.tick, elapsed_pct);
+    if (r.reset) lv_label_set_text(r.reset, reset);
+}
+
+static void show_split_row(SplitRow& r, bool on) {
+    lv_obj_t* const objs[] = { r.pill, r.bar, r.pct, r.reset };
+    for (lv_obj_t* o : objs) {
+        if (!o) continue;
+        if (on) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Half `idx` from the payload: the top account is the usual fields, the
+// bottom one the `…2` fields. A bottom account with no reading dims and
+// shows dashes, never 0 %.
+static void update_split_half(SplitHalf& h, int idx, const UsageData* d) {
+    const bool top = idx == 0;
+    const char* name = top ? d->label : d->label2;
+    lv_label_set_text(h.label, name[0] ? name : split_default_label(idx));
+    const bool ok = top || d->ok2;           // ui_update only gets here when `ok`
+    const bool ent = top ? d->enterprise : d->enterprise2;
+    const float s = top ? d->session_pct : d->session2_pct;
+    const int   sr = top ? d->session_reset_mins : d->session2_reset_mins;
+    const float w = top ? d->weekly_pct : d->weekly2_pct;
+    const int   wr = top ? d->weekly_reset_mins : d->weekly2_reset_mins;
+    lv_obj_set_style_opa(h.panel, ok ? LV_OPA_COVER : STALE_OPA, 0);
+
+    const Layout::Split& S = L.split;
+    lv_label_set_text(h.row[0].pill, ent ? S.pills[2] : S.pills[0]);
+    show_split_row(h.row[1], !ent);
+    if (!ok) {
+        set_split_row(h.row[0], -1, COL_GREEN, -1.0f, "No data");
+        set_split_row(h.row[1], -1, COL_GREEN, -1.0f, "");
+        return;
+    }
+    char buf[32];
+    if (ent) {
+        // Spending only: the period line needs more room than a half has.
+        set_split_row(h.row[0], (int)(s + 0.5f), pct_color(s), -1.0f, "of spending limit");
+        return;
+    }
+    format_reset_time(sr, buf, sizeof(buf), "Not started");
+    set_split_row(h.row[0], (int)(s + 0.5f), bar_color(s, sr, PACE_SESSION_MINS),
+                  pace_elapsed_pct(sr, PACE_SESSION_MINS), buf);
+    format_reset_time(wr, buf, sizeof(buf), "---");
+    set_split_row(h.row[1], (int)(w + 0.5f), bar_color(w, wr, PACE_WEEK_MINS),
+                  pace_elapsed_pct(wr, PACE_WEEK_MINS), buf);
+}
+
+static void update_split(const UsageData* d) {
+    for (int i = 0; i < 2; i++) update_split_half(split_half[i], i, d);
+}
+
 void ui_set_pace_marker(bool on) {
     if (on == pace_marker) return;
     pace_marker = on;
-    if (have_last_data) apply_bar_colors(&last_data);
+    if (!have_last_data) return;
+    apply_bar_colors(&last_data);
+    if (last_data.split) update_split(&last_data);
 }
+
+static void update_view_state(void);
 
 void ui_update(const UsageData* data) {
     if (!data->valid) return;
@@ -664,14 +797,22 @@ void ui_update(const UsageData* data) {
         lv_label_set_text(lbl_weekly_reset, buf);
     }
     apply_bar_colors(data);
+
+    if (data->split) update_split(data);
+    if (data->split != split_view) {   // swap the meters' group
+        split_view = data->split;
+        view_state = -1;
+        update_view_state();
+    }
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), stale meters
 // (connected but data has gone stale: dimmed, last values kept), or the live
 // meters. Only restyles on an actual change. The animated status line stays
-// visible everywhere and names the state.
+// visible everywhere and names the state. The meters are usage_group, or
+// split_group while the payloads carry two accounts.
 static void update_view_state(void) {
-    if (!usage_group || !pair_group) return;
+    if (!usage_group || !split_group || !pair_group) return;
     int v;
     if (!s_ble_connected) {
         v = 0;  // pairing hint
@@ -682,15 +823,17 @@ static void update_view_state(void) {
     }
     if (v == view_state) return;
     view_state = v;
+    lv_obj_t* meters = split_view ? split_group : usage_group;
+    lv_obj_add_flag(split_view ? usage_group : split_group, LV_OBJ_FLAG_HIDDEN);
     if (v == 0) {
-        lv_obj_add_flag(usage_group, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(meters, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(pair_group, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(pair_group, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(usage_group, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(meters, LV_OBJ_FLAG_HIDDEN);
         // `opa` (not `opa_layered`) scales every draw of the group and its
         // children: no layer buffer, so it costs nothing on the C6.
-        lv_obj_set_style_opa(usage_group, v == 1 ? STALE_OPA : LV_OPA_COVER, 0);
+        lv_obj_set_style_opa(meters, v == 1 ? STALE_OPA : LV_OPA_COVER, 0);
     }
 }
 
@@ -750,7 +893,11 @@ void ui_tick_anim(void) {
         anim_msg_start = now;
     }
 
-    if (tune.spinner) {
+    // Live and settled but Claude isn't working: a still line, no verbs.
+    const bool calm = s_ble_connected && view_state == 2 && now - connected_at_ms >= 5000
+                   && !signals_working();
+
+    if (tune.spinner && !calm) {
         if (now - anim_last_ms < spinner_ms[anim_spinner_idx]) return;
         anim_last_ms = now;
         anim_phase = (anim_phase + 1) % SPINNER_PHASES;
@@ -761,7 +908,7 @@ void ui_tick_anim(void) {
         anim_spinner_idx = 1;
     }
 
-    // Status text by priority. Whimsical messages only when connected & settled.
+    // Status text by priority. Whimsical messages only while Claude works.
     const char* text;
     if (!s_ble_connected) {
         text = "Waiting";              // advertising / waiting for a host connection
@@ -769,11 +916,13 @@ void ui_tick_anim(void) {
         text = (anim_msg_idx & 1) ? (data_received ? "Stale" : "No data") : "Listening";
     } else if (now - connected_at_ms < 5000) {
         text = "Connected";
+    } else if (calm) {
+        text = signals_hooks_seen() ? "Idle" : "Connected";   // no hooks: can't tell
     } else {
         text = anim_messages[anim_verb_idx];
     }
 
-    if (!tune.spinner) {
+    if (!tune.spinner || calm) {
         if (text == frozen_shown) return;
         frozen_shown = text;
     }

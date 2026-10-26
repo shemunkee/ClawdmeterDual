@@ -266,6 +266,12 @@ pub struct Settings {
     pub attention_anim: AttentionAnim,
     /// Pace marker on the device's usage bars (`pm`, default off).
     pub pace_marker: bool,
+    /// The device shows the first two accounts at once, top and bottom
+    /// (`split_accounts`, default off; needs two `config_dirs`).
+    pub split_accounts: bool,
+    /// A name per account, in `config_dirs` order (`account_labels`, a comma
+    /// list). A missing or blank one falls back to the folder's name.
+    pub account_labels: Vec<String>,
 }
 
 /// `alert_on`: the alert kinds that show, as a comma list of `permission`,
@@ -394,6 +400,45 @@ impl Settings {
             liveliness: cfg.get("liveliness").map(parse_liveliness).unwrap_or(DEFAULT_LIVELINESS),
             attention_anim: cfg.get("attention_anim").map(AttentionAnim::parse).unwrap_or_default(),
             pace_marker: on_off(cfg.get("pace_marker"), false),
+            split_accounts: on_off(cfg.get("split_accounts"), false),
+            account_labels: parse_account_labels(cfg.get("account_labels")),
+        }
+    }
+
+    /// Whether the device shows two accounts: the setting is on and there
+    /// are at least two.
+    pub fn split_active(&self) -> bool {
+        self.split_accounts && self.config_dirs.len() >= 2
+    }
+
+    /// The name for account `i` of `config_dirs`: its label, else the
+    /// folder's name ([`default_account_label`]).
+    pub fn account_label(&self, i: usize) -> String {
+        match self.account_labels.get(i).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            Some(l) => l.to_owned(),
+            None => self.config_dirs.get(i).map(|d| default_account_label(d)).unwrap_or_default(),
+        }
+    }
+
+    /// Set account `i`'s label (blank = the folder's name).
+    pub fn set_account_label(&mut self, i: usize, label: &str) {
+        if self.account_labels.len() <= i {
+            self.account_labels.resize(i + 1, String::new());
+        }
+        // Commas would split the list when it's read back.
+        self.account_labels[i] = label.replace(',', " ").trim().to_owned();
+        while self.account_labels.last().is_some_and(String::is_empty) {
+            self.account_labels.pop();
+        }
+    }
+
+    /// Remove account `i`, and its label with it so the others keep theirs.
+    pub fn remove_account(&mut self, i: usize) {
+        if i < self.config_dirs.len() {
+            self.config_dirs.remove(i);
+        }
+        if i < self.account_labels.len() {
+            self.account_labels.remove(i);
         }
     }
 
@@ -453,6 +498,7 @@ impl Settings {
             ("alert_chime", "beep", self.alert_chime, current.alert_chime),
             ("desktop_chime", "", self.desktop_chime, current.desktop_chime),
             ("pace_marker", "", self.pace_marker, current.pace_marker),
+            ("split_accounts", "", self.split_accounts, current.split_accounts),
         ] {
             if now != was {
                 cfg.set(key, oo(now));
@@ -485,6 +531,34 @@ impl Settings {
         if current.attention_anim != self.attention_anim {
             cfg.set("attention_anim", self.attention_anim.as_str());
         }
+        if current.account_labels != self.account_labels {
+            if self.account_labels.iter().all(String::is_empty) {
+                cfg.remove("account_labels");
+            } else {
+                cfg.set("account_labels", &self.account_labels.join(", "));
+            }
+        }
+    }
+}
+
+/// `account_labels`: comma list in `config_dirs` order; blanks keep their
+/// place (", Work" names only the second account).
+pub fn parse_account_labels(raw: Option<&str>) -> Vec<String> {
+    let mut labels: Vec<String> = raw.unwrap_or("").split(',').map(|s| s.trim().to_owned()).collect();
+    while labels.last().is_some_and(String::is_empty) {
+        labels.pop();
+    }
+    labels
+}
+
+/// An account's name from its folder: `~/.claude` is "claude",
+/// `~/.claude-work` "work", `~/accounts/Team` "Team".
+pub fn default_account_label(dir: &Path) -> String {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = name.trim_start_matches('.');
+    match name.strip_prefix("claude-").or_else(|| name.strip_prefix("claude_")) {
+        Some(rest) if !rest.is_empty() => rest.to_owned(),
+        _ => name.to_owned(),
     }
 }
 
@@ -534,6 +608,40 @@ mod tests {
         s.alert_on.idle = true;
         s.apply_to(&mut cfg, &paths());
         assert_eq!(cfg.get("alert_on"), Some("permission, question, idle, elicitation"));
+    }
+
+    #[test]
+    fn split_accounts_and_labels() {
+        let s = settings("");
+        assert!(!s.split_accounts && !s.split_active());
+        assert_eq!(s.account_label(0), "claude");
+        let s = settings(
+            "config_dirs = ~/.claude, ~/.claude-work, ~/x/Team\nsplit_accounts = on\naccount_labels = , Job\n",
+        );
+        assert!(s.split_active());
+        assert_eq!(s.account_labels, vec!["", "Job"]);
+        assert_eq!(
+            (s.account_label(0), s.account_label(1), s.account_label(2)),
+            ("claude".into(), "Job".into(), "Team".into())
+        );
+        assert!(!settings("split_accounts = on\n").split_active(), "one account: nothing to split");
+
+        // Removing an account takes its label with it.
+        let mut s = s;
+        s.remove_account(0);
+        assert_eq!((s.account_label(0), s.account_label(1)), ("Job".into(), "Team".into()));
+
+        // Round trip through the file; blank labels leave the key out.
+        let mut cfg = ConfigFile::parse("config_dirs = ~/.claude, ~/.claude-work\n");
+        let mut s = Settings::from_config(&cfg, &paths(), None);
+        s.split_accounts = true;
+        s.set_account_label(1, "Work, Inc");
+        s.apply_to(&mut cfg, &paths());
+        assert_eq!((cfg.get("split_accounts"), cfg.get("account_labels")), (Some("on"), Some(", Work  Inc")));
+        assert_eq!(Settings::from_config(&cfg, &paths(), None).account_label(1), "Work  Inc");
+        s.set_account_label(1, "");
+        s.apply_to(&mut cfg, &paths());
+        assert_eq!(cfg.get("account_labels"), None);
     }
 
     // Ported from the legacy daemon test test_bash_heartbeat.sh (interval parsing).

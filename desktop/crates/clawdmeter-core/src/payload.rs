@@ -92,13 +92,51 @@ pub struct Payload {
     /// value it got.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pm: Option<u8>,
+    /// Two accounts at once (`split_accounts`): the top account's name. The
+    /// usage fields above are that account; the `…2` fields below the other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub l: Option<String>,
+    /// Second account: session % used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s2: Option<u32>,
+    /// Second account: minutes until the session resets; -1 = not started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sr2: Option<i64>,
+    /// Second account: weekly % used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub w2: Option<u32>,
+    /// Second account: minutes until the weekly reset; -1 = unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wr2: Option<i64>,
+    /// Second account: "ent" when it's spend-capped (`s2` is the spend %).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acct2: Option<String>,
+    /// Second account has a reading. `false` alone: the device shows its
+    /// half as "no data", never 0 %.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok2: Option<bool>,
+    /// The second account's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub l2: Option<String>,
 }
 
 /// Every key [`Payload`] can emit, in serialization order.
 pub const PAYLOAD_KEYS: &[&str] = &[
     "s", "sr", "w", "wr", "st", "acct", "tp", "pd", "rd", "t", "tf", "c", "ok", "b", "m", "x", "a", "e", "es", "n",
-    "rp", "lv", "aa", "pm",
+    "rp", "lv", "aa", "pm", "l", "s2", "sr2", "w2", "wr2", "acct2", "ok2", "l2",
 ];
+
+/// Longest account label sent to the device (its buffer holds 12 + NUL).
+pub const LABEL_MAX: usize = 12;
+
+/// An account label as the device can draw it: printable ASCII only,
+/// trimmed, at most [`LABEL_MAX`] bytes.
+pub fn device_label(name: &str) -> String {
+    let ascii: String = name.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').collect();
+    let mut out = ascii.trim().to_owned();
+    out.truncate(LABEL_MAX);
+    out.trim_end().to_owned()
+}
 /// The fast-clock keys added in v0.4 (old firmware ignores them).
 pub const ADDITIVE_KEYS: &[&str] = &["a", "e", "es", "n", "rp"];
 
@@ -256,6 +294,28 @@ impl Payload {
         }
     }
 
+    /// Adds the second account (`split_accounts`): its usage from `second`
+    /// (`ok2:false` when it has no reading) and both labels.
+    pub fn with_second(mut self, second: Option<&UsageReading>, now: DateTime<Utc>, top: &str, bottom: &str) -> Self {
+        self.l = Some(device_label(top));
+        self.l2 = Some(device_label(bottom));
+        match second {
+            Some(r) => {
+                let p = Payload::from_reading(r, now);
+                self.s2 = p.s;
+                self.sr2 = p.sr;
+                self.acct2 = p.acct.filter(|a| a == "ent");
+                if self.acct2.is_none() {
+                    self.w2 = p.w;
+                    self.wr2 = p.wr;
+                }
+                self.ok2 = Some(true);
+            }
+            None => self.ok2 = Some(false),
+        }
+        self
+    }
+
     /// The "no data" payload (every account logged out).
     pub fn no_data() -> Self {
         Payload { ok: false, ..Default::default() }
@@ -266,7 +326,7 @@ impl Payload {
     pub fn aged(&self, secs: i64) -> Self {
         let mins = secs / 60;
         let mut p = self.clone();
-        for x in [&mut p.sr, &mut p.wr].into_iter().flatten() {
+        for x in [&mut p.sr, &mut p.wr, &mut p.sr2, &mut p.wr2].into_iter().flatten() {
             if *x > 0 {
                 *x = (*x - mins).max(0);
             }
@@ -482,6 +542,83 @@ mod tests {
     }
 
     #[test]
+    fn second_account() {
+        let now = at("2026-10-13T05:40:00Z");
+        let top = UsageReading {
+            session: Some(Window { pct: 15, resets_at: Some(at("2026-10-13T07:00:00Z")) }),
+            week: Some(Window { pct: 6, resets_at: Some(at("2026-10-18T22:00:00Z")) }),
+            ..Default::default()
+        };
+        let other = UsageReading {
+            session: Some(Window { pct: 64, resets_at: None }),
+            week: Some(Window { pct: 71, resets_at: Some(at("2026-10-14T05:40:00Z")) }),
+            ..Default::default()
+        };
+        let pl = Payload::from_reading(&top, now).with_second(Some(&other), now, "Personal", "Work");
+        assert_eq!(
+            pl.to_json(),
+            r#"{"s":15,"sr":80,"w":6,"wr":8180,"st":"allowed","acct":"pro","ok":true,"l":"Personal","s2":64,"sr2":-1,"w2":71,"wr2":1440,"ok2":true,"l2":"Work"}"#
+        );
+        // Aging ticks the second account's countdowns too, never a -1.
+        let aged = pl.aged(120);
+        assert_eq!((aged.sr2, aged.wr2), (Some(-1), Some(1438)));
+        // No reading: ok2:false and no numbers, never a 0 %.
+        let none = Payload::from_reading(&top, now).with_second(None, now, "a", "b");
+        assert_eq!((none.ok2, none.s2, none.w2), (Some(false), None, None));
+        // A spend-capped second account sends its spend % and no weekly.
+        use crate::usage::Spend;
+        let ent = UsageReading { spend: Some(Spend { pct: 41, resets_at: None, period: None }), ..Default::default() };
+        let pl = Payload::from_reading(&top, now).with_second(Some(&ent), now, "a", "b");
+        assert_eq!((pl.s2, pl.acct2.as_deref(), pl.w2, pl.wr2), (Some(41), Some("ent"), None, None));
+    }
+
+    #[test]
+    fn labels_fit_the_device() {
+        assert_eq!(device_label("Work"), "Work");
+        assert_eq!(device_label("  Café Ärger "), "Caf rger");
+        assert_eq!(device_label("A very long account name"), "A very long");
+        assert_eq!(device_label("Personal \u{1F600}"), "Personal");
+    }
+
+    #[test]
+    fn two_accounts_fit_one_write() {
+        // Every field at its widest, with both labels full: room to spare
+        // under the BLE write cap before any alert message.
+        let pl = Payload {
+            s: Some(100),
+            sr: Some(299),
+            w: Some(100),
+            wr: Some(10079),
+            st: Some("overage".into()),
+            acct: Some("pro".into()),
+            t: Some(1_800_000_000),
+            tf: Some(24),
+            c: Some(1),
+            ok: true,
+            a: Some(3),
+            e: Some("p".into()),
+            es: Some(4_000_000_000),
+            n: Some(999),
+            rp: Some(1),
+            lv: Some(5),
+            aa: Some(120),
+            pm: Some(1),
+            ..Default::default()
+        }
+        .with_second(
+            Some(&UsageReading {
+                session: Some(crate::usage::Window { pct: 100, resets_at: None }),
+                week: Some(crate::usage::Window { pct: 100, resets_at: None }),
+                ..Default::default()
+            }),
+            at("2026-10-13T05:40:00Z"),
+            "MMMMMMMMMMMM",
+            "MMMMMMMMMMMM",
+        );
+        assert!(pl.to_json().len() < 300, "{}", pl.to_json().len());
+    }
+
+    #[test]
     fn full_payload_key_order() {
         let pl = Payload {
             s: Some(1),
@@ -508,6 +645,14 @@ mod tests {
             lv: Some(3),
             aa: Some(120),
             pm: Some(1),
+            l: Some("Personal".into()),
+            s2: Some(6),
+            sr2: Some(7),
+            w2: Some(8),
+            wr2: Some(9),
+            acct2: Some("ent".into()),
+            ok2: Some(true),
+            l2: Some("Work".into()),
         };
         let v: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&pl.to_json()).unwrap();
         // serde_json's Map is sorted without preserve_order; check membership.

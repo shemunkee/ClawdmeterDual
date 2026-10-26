@@ -1,0 +1,9 @@
+# Two accounts at once (the app's split_accounts setting): the top half is
+# the usual fields, the bottom half the "...2" fields, with their labels.
+# SIM_SCENARIO=sim/split.jsonl .pio/build/sim/program
+{"name":"two accounts","hold_ms":4000,"s":42.0,"sr":180,"w":33.0,"wr":7900,"st":"allowed","l":"Personal","s2":12.0,"sr2":260,"w2":61.0,"wr2":3100,"ok2":true,"l2":"Work","ok":true,"t":1785474000,"tf":24}
+{"name":"work heating up","hold_ms":3000,"s":44.0,"sr":175,"w":33.0,"wr":7890,"st":"allowed","l":"Personal","s2":83.0,"sr2":45,"w2":74.0,"wr2":3000,"ok2":true,"l2":"Work","ok":true}
+{"name":"work not started","hold_ms":3000,"s":44.0,"sr":170,"w":34.0,"wr":7880,"st":"allowed","l":"Personal","s2":0.0,"sr2":-1,"w2":74.0,"wr2":2990,"ok2":true,"l2":"Work","ok":true}
+{"name":"work no data","hold_ms":3000,"s":46.0,"sr":165,"w":34.0,"wr":7870,"st":"allowed","l":"Personal","ok2":false,"l2":"Work","ok":true}
+{"name":"long label, spend-capped","hold_ms":3000,"s":46.0,"sr":160,"w":34.0,"wr":7860,"st":"allowed","l":"Personal","s2":37.0,"sr2":-1,"acct2":"ent","ok2":true,"l2":"Enterprise Co","ok":true}
+{"name":"back to one account","hold_ms":3000,"s":47.0,"sr":155,"w":35.0,"wr":7850,"st":"allowed","ok":true}

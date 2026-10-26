@@ -13,7 +13,7 @@ use crate::backoff::SavedBlock;
 use crate::cadence::{heartbeat_due, AccountClock, Cadence, PollReason, Scheduler};
 use crate::config::Settings;
 use crate::events::{Activity, HookEvent, Signal};
-use crate::payload::{clock_fields, Payload};
+use crate::payload::{clock_fields, device_label, Payload};
 use crate::probe::{self, Plan as ProbePlan, Source};
 use crate::rate::{Mood, RateTracker};
 use crate::selector::PlanSelector;
@@ -117,6 +117,20 @@ pub struct EngineStatus {
     pub paused_until: Option<i64>,
     /// The shown account is being polled.
     pub polling: bool,
+    /// Two accounts on the device (`split_accounts`), as it shows them.
+    pub split: Option<SplitStatus>,
+}
+
+/// The two halves of a split device: the top is [`EngineStatus::reading`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SplitStatus {
+    /// The top half's label (`account_labels`, else the folder name).
+    pub top_label: String,
+    /// The bottom half's label.
+    pub bottom_label: String,
+    /// The bottom account's numbers; `None` when it has none (or they're
+    /// stale), shown as no data.
+    pub bottom: Option<UsageReading>,
 }
 
 /// The daemon state machine.
@@ -145,6 +159,9 @@ pub struct Engine {
     sent_aa: Option<u16>,
     /// The pace marker the device last got (`pm`).
     sent_pm: Option<u8>,
+    /// The account labels the device last got (`l`/`l2`); `Some(None)`: a
+    /// single-account write.
+    sent_split: Option<Option<(String, String)>>,
     last_event_ts: Option<i64>,
     /// Latest prompt or tool activity that names no configured account.
     unattributed_activity: Option<i64>,
@@ -183,6 +200,7 @@ impl Engine {
             sent_lv: None,
             sent_aa: None,
             sent_pm: None,
+            sent_split: None,
             last_event_ts: None,
             unattributed_activity: None,
             claude_found: true,
@@ -206,6 +224,31 @@ impl Engine {
             self.accounts.retain(|k, _| settings.config_dirs.contains(k));
         }
         self.settings = settings;
+        if let Some(top) = self.split_top() {
+            self.active = Some(top);
+        }
+    }
+
+    /// With two accounts on the device, the top half is the first account
+    /// in `config_dirs` (the second while the first has no reading yet),
+    /// whatever the selector would pick. It is the shown account: the rate
+    /// math, the reset chime and the cadence follow it.
+    fn split_top(&self) -> Option<PathBuf> {
+        if !self.settings.split_active() {
+            return None;
+        }
+        self.settings.config_dirs[..2].iter().find(|d| self.accounts.get(*d).is_some_and(|a| a.last.is_some())).cloned()
+    }
+
+    /// Two accounts on the device: (top label, bottom label, bottom account).
+    fn split_parts(&self) -> Option<(String, String, PathBuf)> {
+        if !self.settings.split_active() {
+            return None;
+        }
+        let dirs = &self.settings.config_dirs;
+        let top = dirs[..2].iter().position(|d| Some(d) == self.active.as_ref())?;
+        let other = 1 - top;
+        Some((self.settings.account_label(top), self.settings.account_label(other), dirs[other].clone()))
     }
 
     /// Whether events.log exists.
@@ -280,6 +323,7 @@ impl Engine {
         self.sent_lv = None;
         self.sent_aa = None;
         self.sent_pm = None;
+        self.sent_split = None;
         if self.active.is_some() || self.logged_out {
             self.fresh_poll = true;
         }
@@ -415,7 +459,8 @@ impl Engine {
         let sessions: Vec<(PathBuf, u32)> =
             self.accounts.iter().filter_map(|(k, a)| a.last.as_ref().map(|r| (k.clone(), r.session_pct()))).collect();
         let prev_active = self.active.clone();
-        self.active = self.selector.choose(&sessions);
+        let chosen = self.selector.choose(&sessions);
+        self.active = self.split_top().or(chosen);
         if self.active != prev_active && self.settings.config_dirs.len() > 1 {
             if let Some(a) = &self.active {
                 log::info!("active plan: {}", a.display());
@@ -465,8 +510,12 @@ impl Engine {
         // A changed device setting goes out right away, like an event.
         let aa = self.settings.attention_anim.seconds();
         let pm = u8::from(self.settings.pace_marker);
-        let prefs_changed =
-            self.sent_lv != Some(self.settings.liveliness) || self.sent_aa != Some(aa) || self.sent_pm != Some(pm);
+        let split = self.split_parts();
+        let labels = split.as_ref().map(|(top, bottom, _)| (device_label(top), device_label(bottom)));
+        let prefs_changed = self.sent_lv != Some(self.settings.liveliness)
+            || self.sent_aa != Some(aa)
+            || self.sent_pm != Some(pm)
+            || self.sent_split.as_ref() != Some(&labels);
 
         let (mut payload, kind) = if self.logged_out {
             if !(self.fresh_poll || self.attention.pending()) {
@@ -504,6 +553,11 @@ impl Engine {
             p.lv = Some(self.settings.liveliness);
             p.aa = Some(aa);
             p.pm = Some(pm);
+            if let Some((top, bottom, other)) = &split {
+                // A stale second account shows "no data", never old numbers as live.
+                let second = self.accounts.get(other).filter(|a| !a.is_stale(now)).and_then(|a| a.last.as_ref());
+                p = p.with_second(second, utc(now), top, bottom);
+            }
             (p, kind)
         };
 
@@ -556,6 +610,9 @@ impl Engine {
         if let Some(pm) = w.payload.pm {
             self.sent_pm = Some(pm);
         }
+        if w.kind != WriteKind::NoData {
+            self.sent_split = Some(w.payload.l.clone().zip(w.payload.l2.clone()));
+        }
     }
 
     /// Snapshot for the UI.
@@ -600,6 +657,11 @@ impl Engine {
                 .and_then(|a| a.backoff.until())
                 .filter(|u| *u > now),
             polling: self.active.as_ref().is_some_and(|a| self.in_flight.contains(a)),
+            split: self.split_parts().map(|(top_label, bottom_label, other)| SplitStatus {
+                top_label,
+                bottom_label,
+                bottom: self.accounts.get(&other).filter(|a| !a.is_stale(now)).and_then(|a| a.last.clone()),
+            }),
         }
     }
 }
@@ -694,6 +756,66 @@ mod tests {
         // B tokenless/logged out doesn't matter while A works.
         e.on_poll_results(T0 + 180, vec![(a.clone(), Ok(reading(20))), (b, Err(UsageError::NotLoggedIn("x".into())))]);
         assert!(!e.status(T0 + 180).logged_out);
+    }
+
+    // Two accounts on the device: the first is always on top (and is the
+    // shown account), the second rides along with its label.
+    #[test]
+    fn split_sends_both_accounts_in_config_order() {
+        let mut e = Engine::new(settings(
+            "config_dirs = ~/.claude, ~/.claude-work\nsplit_accounts = on\naccount_labels = Personal\n",
+        ));
+        let a = PathBuf::from("/h/.claude");
+        let b = PathBuf::from("/h/.claude-work");
+        // B's session is higher and would win the selector; A stays on top.
+        e.on_poll_results(T0, vec![(a.clone(), Ok(reading(10))), (b.clone(), Ok(reading(30)))]);
+        assert_eq!(e.status(T0).active_account, Some(a.clone()));
+        let w = write(&mut e, T0).unwrap();
+        assert_eq!(w.kind, WriteKind::Poll);
+        assert_eq!(
+            w.payload.to_json(),
+            r#"{"s":10,"sr":60,"w":10,"wr":1440,"st":"allowed","acct":"pro","ok":true,"lv":3,"aa":120,"pm":0,"l":"Personal","s2":30,"sr2":60,"w2":10,"wr2":1440,"ok2":true,"l2":"work"}"#
+        );
+        // B rising doesn't swap the halves.
+        e.on_poll_results(T0 + 60, vec![(a.clone(), Ok(reading(10))), (b.clone(), Ok(reading(50)))]);
+        assert_eq!(e.status(T0 + 60).active_account, Some(a.clone()));
+        assert_eq!(write(&mut e, T0 + 60).unwrap().payload.s2, Some(50));
+        // A renamed label goes out at once, as a replay.
+        e.update_settings(settings(
+            "config_dirs = ~/.claude, ~/.claude-work\nsplit_accounts = on\naccount_labels = Me, Job\n",
+        ));
+        let w = write(&mut e, T0 + 61).unwrap();
+        assert_eq!((w.payload.l.as_deref(), w.payload.l2.as_deref(), w.payload.rp), (Some("Me"), Some("Job"), Some(1)));
+        // Turning it off sends a single-account write straight away.
+        e.update_settings(settings("config_dirs = ~/.claude, ~/.claude-work\n"));
+        let w = write(&mut e, T0 + 62).unwrap();
+        assert_eq!((w.payload.s2, w.payload.ok2, w.payload.l), (None, None, None));
+    }
+
+    #[test]
+    fn split_second_account_without_data_is_not_a_zero() {
+        let mut e = Engine::new(settings("config_dirs = ~/.claude, ~/.claude-work\nsplit_accounts = on\n"));
+        let a = PathBuf::from("/h/.claude");
+        let b = PathBuf::from("/h/.claude-work");
+        e.on_poll_results(T0, vec![(a.clone(), Ok(reading(10))), (b.clone(), Err(UsageError::Timeout))]);
+        let w = write(&mut e, T0).unwrap();
+        assert_eq!((w.payload.ok2, w.payload.s2, w.payload.w2), (Some(false), None, None));
+        // B answers, then misses three times: its half goes back to "no data".
+        e.on_poll_results(T0 + 60, vec![(b.clone(), Ok(reading(40)))]);
+        assert_eq!(write(&mut e, T0 + 120).unwrap().payload.s2, Some(40));
+        for i in 1..=3 {
+            e.on_poll_results(T0 + 120 + i, vec![(a.clone(), Ok(reading(10))), (b.clone(), Err(UsageError::Timeout))]);
+        }
+        let w = write(&mut e, T0 + 200).unwrap();
+        assert_eq!((w.payload.ok2, w.payload.s2), (Some(false), None));
+    }
+
+    #[test]
+    fn split_needs_two_accounts() {
+        let mut e = Engine::new(settings("split_accounts = on\n"));
+        e.on_poll_results(T0, vec![(PathBuf::from("/h/.claude"), Ok(reading(10)))]);
+        let w = write(&mut e, T0).unwrap();
+        assert_eq!((w.payload.s2, w.payload.ok2, w.payload.l), (None, None, None));
     }
 
     // A miss on the shown account is never a poll, even when another

@@ -10,7 +10,7 @@ use super::widgets::{
 };
 use super::{command, live_status, not_running_text, Navigate, REFRESH};
 use crate::art::TrayState;
-use crate::ipc::{AppCommand, StatusSnapshot};
+use crate::ipc::{AccountMeters, AppCommand, StatusSnapshot};
 use crate::{ago, tilde, Page};
 
 /// The overview page.
@@ -210,6 +210,28 @@ fn meter(t: &Theme, label: &'static str, pct: Option<u32>, reset: String) -> imp
         .child(div().mt(px(8.)).text_size(px(15.)).text_color(t.dim).child(reset))
 }
 
+/// One account of a split device: its label over its meters. No data shows
+/// "--%" and "No data", never zeros; a spend-capped account has one meter.
+fn half(t: &Theme, a: &AccountMeters, now: i64) -> impl IntoElement {
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .gap(px(12.))
+        .child(div().text_size(px(16.)).text_color(t.text).truncate().child(a.label.clone()));
+    if !a.ok {
+        col = col.child(meter(t, "Session", None, "No data".into())).child(meter(t, "Weekly", None, "No data".into()));
+    } else if a.spend_only {
+        col = col.child(meter(t, "Spending", a.session_pct, "of spending limit".into()));
+    } else {
+        col = col
+            .child(meter(t, "Session", a.session_pct, reset_text(a.session_resets_at, now, "Not started")))
+            .child(meter(t, "Weekly", a.week_pct, reset_text(a.week_resets_at, now, "---")));
+    }
+    col
+}
+
 impl Render for OverviewView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::for_appearance(window.appearance());
@@ -288,14 +310,19 @@ impl Render for OverviewView {
             return page.child(chime).child(setup);
         };
 
-        page = page.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .child(meter(&t, "Session", s.session_pct, reset_text(s.session_resets_at, now, "Not started")))
-                .child(meter(&t, "Weekly", s.week_pct, reset_text(s.week_resets_at, now, "---"))),
-        );
+        page = if s.split.is_empty() {
+            page.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(meter(&t, "Session", s.session_pct, reset_text(s.session_resets_at, now, "Not started")))
+                    .child(meter(&t, "Weekly", s.week_pct, reset_text(s.week_resets_at, now, "---"))),
+            )
+        } else {
+            // Both accounts, as the device's two halves.
+            page.child(div().flex().gap(px(12.)).children(s.split.iter().map(|a| half(&t, a, now))))
+        };
         if let Some(v) = s.update_available() {
             let v = v.trim_start_matches('v').to_owned();
             page = page.child(

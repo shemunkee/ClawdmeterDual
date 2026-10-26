@@ -235,6 +235,18 @@ impl AppView {
                         .child("@HermannBjorgvin"),
                 ),
             )
+            .child(
+                div().flex().gap(px(4.)).whitespace_nowrap().child("Enhanced by").child(
+                    div()
+                        .id("enhanced-credit")
+                        .debug_selector(|| "enhanced-credit".into())
+                        .text_color(t.dim)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(t.text).underline())
+                        .on_click(|_, _, cx| cx.open_url(ENHANCED_URL))
+                        .child("@SheMunkee"),
+                ),
+            )
             .child(format!("Version {}", crate::version()));
         div()
             .flex()
@@ -257,6 +269,8 @@ impl AppView {
 
 /// The author's profile, linked from the sidebar footer.
 const CREDIT_URL: &str = "https://x.com/HermannBjorgvin";
+/// The split-screen enhancements' author, linked under the credit.
+const ENHANCED_URL: &str = "https://www.instagram.com/SheMunkee";
 
 /// The sidebar icon for a page.
 fn page_icon(page: Page) -> &'static str {

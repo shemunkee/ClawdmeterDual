@@ -77,6 +77,18 @@ bool payload_parse(const char* json, UsageData* out, const char** err) {
     JsonVariant pm = doc["pm"];
     d.pace_marker = pm.isNull() ? -1 : (int8_t)((pm | 0) ? 1 : 0);
 
+    // ---- second account (optional) ----
+    JsonVariant ok2 = doc["ok2"];
+    d.split = !doc["s2"].isNull() || !ok2.isNull();
+    d.ok2 = ok2.isNull() ? d.split : ok2.as<bool>();
+    d.session2_pct = doc["s2"] | 0.0f;
+    d.session2_reset_mins = doc["sr2"] | -1;
+    d.weekly2_pct = doc["w2"] | 0.0f;
+    d.weekly2_reset_mins = doc["wr2"] | -1;
+    d.enterprise2 = (strcmp(doc["acct2"] | "pro", "ent") == 0);
+    copy_str(d.label, sizeof(d.label), doc["l"] | "");
+    copy_str(d.label2, sizeof(d.label2), doc["l2"] | "");
+
     d.ok = doc["ok"] | false;
     d.valid = true;
     *out = d;

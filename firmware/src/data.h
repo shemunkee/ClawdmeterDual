@@ -35,6 +35,18 @@ struct UsageData {
     int8_t   liveliness;     // `lv` 1-5 (clamped); -1 = absent (keep the saved level)
     int16_t  attn_anim_s;    // `aa` attention animation, seconds 0-120 (0 = off); -1 = absent
     int8_t   pace_marker;    // `pm` 1 = pace marker on the usage bars, 0 = off; -1 = absent
+    // ---- Two accounts at once (optional). The fields above describe the
+    // top account; these the bottom one. Present only when the app's split
+    // setting is on, and absent from older apps (split = false).
+    bool  split;             // `s2` or `ok2` present: draw both accounts
+    bool  ok2;               // `ok2` the second account has a reading
+    float session2_pct;      // `s2`
+    int   session2_reset_mins;  // `sr2` -1 = not started / unknown
+    float weekly2_pct;       // `w2`
+    int   weekly2_reset_mins;   // `wr2` -1 = unknown
+    bool  enterprise2;       // `acct2` "ent": `s2` is spend %, no weekly
+    char  label[13];         // `l`  top account's name; empty = not sent
+    char  label2[13];        // `l2` bottom account's name
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };

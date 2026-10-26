@@ -132,6 +132,15 @@ the line, amber when it's ahead, and red at the limit. Off (the default),
 the bars go amber at 50% and red at 80%. A bar with no reset time yet keeps
 those colours, and spend-capped accounts are unchanged.
 
+**Show two accounts on the device** (Accounts page, with two or more
+account folders) splits the usage screen: the first account on top, the
+second below, each with its name, a session bar and a weekly bar. Small
+screens drop the reset times to fit. Name the accounts with `account_labels`
+in the config file (see below); otherwise each shows its folder's name. The
+top account drives Clawd, the reset chime and the activity readout. A
+bottom account with no reading dims and shows dashes. A spend-capped
+account shows only its spending bar in its half.
+
 The device boots to the meters. Clawd performs his shows right on them,
 in front of the panels. Tap a show or the screensaver to send him back to
 his seat.
@@ -152,11 +161,13 @@ Clawd, with no animated scenes. This is a board capability, not a user setting.
 C6 boards have no room for the full-size Clawd: their shows are acts in his
 corner seat.
 
-The status line rotates through Claude Code's whimsical thinking verbs when
-all is well. It shows **Waiting** without a connection, **No data** before a
-reading, and **Stale** when the retained reading is old. The verbs are a
-healthy-status indicator, not a report of an active model request. While
-connected but waiting for fresh data, the status alternates with **Listening**. Minimal display uses fixed status text.
+The status line rotates through Claude Code's whimsical thinking verbs while
+Claude is working: from your prompt until Claude stops, or while tools ran in
+the last minute (this needs the hooks). Otherwise it reads **Idle**, or
+**Connected** when the hooks aren't installed. It shows **Waiting** without a
+connection, **No data** before a reading, and **Stale** when the retained
+reading is old. While connected but waiting for fresh data, the status
+alternates with **Listening**. Minimal display uses fixed status text.
 
 If updates stop, the meters dim. The last reading is retained rather than
 replaced with zero. See [Clawd's director](clawd-director.md) for timing
@@ -190,6 +201,8 @@ seconds and preserves comments and unknown keys when saving.
 | `liveliness` | `3` | How lively Clawd is, `1` (No-nonsense) to `5` (All-nonsense). Set with **Animation silliness** on the Device page. |
 | `attention_anim` | `2m` | How long Clawd points and waves for an alert: `off`, `10s`, `30s` or `2m`. The alert itself is unchanged. Set with **Attention animation** on the Device page. |
 | `pace_marker` | `off` | `on` marks the elapsed share of each usage window on the device's bars and colours them by pace. Set with **Pace marker** on the Device page. |
+| `split_accounts` | `off` | `on` shows the first two `config_dirs` accounts at once, top and bottom. Set with **Show two accounts on the device** on the Accounts page. |
+| `account_labels` | folder names | Names for the accounts, comma-separated in `config_dirs` order, e.g. `Personal, Work`. Leave one blank to keep its folder's name (`, Work`). The device shows up to 12 ASCII characters. |
 | `poll_interval` | automatic | Override working and no-hooks polling intervals, in seconds. The scheduler enforces at least 120 seconds per account. Quiet and other-account schedules still apply. |
 | `heartbeat_interval` | `60` | Resend cached readings between usage checks. This does not fetch usage. Keep the default unless diagnosing the connection. |
 | `claude_path` | found on `PATH` | Full path to the Claude Code executable, if detection fails. |

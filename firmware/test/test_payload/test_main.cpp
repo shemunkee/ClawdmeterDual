@@ -121,10 +121,49 @@ static void test_pace_marker(void) {
     TEST_ASSERT_EQUAL_INT(1, d.pace_marker);
 }
 
+static void test_single_account_is_not_split(void) {
+    UsageData d;
+    TEST_ASSERT_TRUE(payload_parse("{\"s\":12,\"sr\":30,\"ok\":true}", &d, nullptr));
+    TEST_ASSERT_FALSE(d.split);
+    TEST_ASSERT_EQUAL_STRING("", d.label);
+    TEST_ASSERT_EQUAL_STRING("", d.label2);
+}
+
+static void test_second_account(void) {
+    UsageData d;
+    TEST_ASSERT_TRUE(payload_parse(
+        "{\"s\":12,\"sr\":30,\"w\":5,\"wr\":900,\"l\":\"Personal\",\"s2\":64.4,\"sr2\":120,"
+        "\"w2\":71,\"wr2\":4000,\"ok2\":true,\"l2\":\"Work\",\"ok\":true}", &d, nullptr));
+    TEST_ASSERT_TRUE(d.split);
+    TEST_ASSERT_TRUE(d.ok2);
+    TEST_ASSERT_EQUAL_FLOAT(64.4f, d.session2_pct);
+    TEST_ASSERT_EQUAL_INT(120, d.session2_reset_mins);
+    TEST_ASSERT_EQUAL_FLOAT(71, d.weekly2_pct);
+    TEST_ASSERT_EQUAL_INT(4000, d.weekly2_reset_mins);
+    TEST_ASSERT_FALSE(d.enterprise2);
+    TEST_ASSERT_EQUAL_STRING("Personal", d.label);
+    TEST_ASSERT_EQUAL_STRING("Work", d.label2);
+}
+
+static void test_second_account_without_data(void) {
+    UsageData d;
+    // ok2:false alone still means two accounts: the bottom half shows "no data".
+    TEST_ASSERT_TRUE(payload_parse("{\"s\":12,\"ok2\":false,\"ok\":true}", &d, nullptr));
+    TEST_ASSERT_TRUE(d.split);
+    TEST_ASSERT_FALSE(d.ok2);
+    TEST_ASSERT_EQUAL_INT(-1, d.session2_reset_mins);
+    TEST_ASSERT_EQUAL_INT(-1, d.weekly2_reset_mins);
+    TEST_ASSERT_TRUE(payload_parse("{\"s2\":3,\"acct2\":\"ent\"}", &d, nullptr));
+    TEST_ASSERT_TRUE(d.ok2);                       // s2 without ok2: a reading
+    TEST_ASSERT_TRUE(d.enterprise2);
+}
+
 static void test_long_strings_truncate(void) {
     UsageData d;
     TEST_ASSERT_TRUE(payload_parse("{\"st\":\"abcdefghijklmnopqrstuvwxyz\"}", &d, nullptr));
     TEST_ASSERT_EQUAL_size_t(sizeof(d.status) - 1, strlen(d.status));
+    TEST_ASSERT_TRUE(payload_parse("{\"l2\":\"abcdefghijklmnopqrstuvwxyz\"}", &d, nullptr));
+    TEST_ASSERT_EQUAL_size_t(sizeof(d.label2) - 1, strlen(d.label2));
 }
 
 int main(void) {
@@ -137,6 +176,9 @@ int main(void) {
     RUN_TEST(test_liveliness);
     RUN_TEST(test_attention_animation);
     RUN_TEST(test_pace_marker);
+    RUN_TEST(test_single_account_is_not_split);
+    RUN_TEST(test_second_account);
+    RUN_TEST(test_second_account_without_data);
     RUN_TEST(test_long_strings_truncate);
     return UNITY_END();
 }

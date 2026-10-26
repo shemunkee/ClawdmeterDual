@@ -151,6 +151,40 @@ static void check_panel(const Panel& p) {
     if (L.bar_y + L.bar_h > L.reset_y) fail("bar vs reset line", card(0));
     if (L.reset_y + ink_h(L.reset_font) > inner_h) fail("reset line vs card bottom", card(0));
 
+    // Two accounts: halves on the glass, apart, clear of the header and the
+    // status line; inside each, the label, two rows and their reset lines
+    // stacked without overlap, and every string fits its column.
+    const Layout::Split& S = L.split;
+    for (int i = 0; i < 2; i++) {
+        const Box h = { S.half[i].x, S.half[i].y, S.half[i].w, S.half[i].h };
+        check_on_glass("split half", h, 8);
+        check_apart("split half vs corner Clawd", h, logo_art());
+        check_apart("split half vs battery", h, battery());
+        check_apart("split half vs status line", h, status_box(STATUS_TEXT_REQUIRED[0]));
+        for (title_fmt = 0; title_fmt < 2; title_fmt++)
+            if (L.title_font[title_fmt])
+                check_apart("split half vs title", h, { 0, L.title_y[title_fmt], p.w, ink_h(L.title_font[title_fmt]) });
+    }
+    check_apart("split halves", { S.half[0].x, S.half[0].y, S.half[0].w, S.half[0].h },
+                                { S.half[1].x, S.half[1].y, S.half[1].w, S.half[1].h });
+    {
+        const Box h0 = { S.half[0].x, S.half[0].y, S.half[0].w, S.half[0].h };
+        const int sw = S.half[0].w - 2 * S.pad_x;
+        const int sh = (S.half[0].h < S.half[1].h ? S.half[0].h : S.half[1].h) - 2 * S.pad_y;
+        const int reset_h = S.reset_font ? line_h(S.reset_font) : 0;
+        if (S.row_y[0] < line_h(S.label_font)) fail("split label vs first row", h0);
+        if (S.row_y[1] < S.row_y[0] + S.row_h + reset_h) fail("split rows", h0);
+        if (S.row_y[1] + S.row_h + reset_h > sh) fail("split rows vs half bottom", h0);
+        if (S.pill_w + S.pct_w + 2 * LAYOUT_SPLIT_GAP + SPLIT_MIN_BAR > sw) fail("split row too narrow", h0);
+        if (text_w(S.row_font, "100%") > S.pct_w) fail("split percentage", h0);
+        for (int i = 0; i < 3; i++)
+            if (text_w(S.row_font, S.pills[i]) + 2 * S.pill_pad_x > S.pill_w) fail(S.pills[i], h0);
+        if (S.reset_font)
+            for (const char* s : SPLIT_RESET_WIDEST)
+                if (text_w(S.reset_font, s) > sw - S.pill_w - LAYOUT_SPLIT_GAP) fail(s, h0);
+        if (p.w >= 368 && p.h >= 448 && !S.reset_font) fail("split without reset lines on a large panel", h0);
+    }
+
     // Status line: every state word fits, under the cards, on the glass.
     if (L.status_w > p.w) fail("status line wider than the panel", { 0, 0, L.status_w, 0 });
     for (const char* s : STATUS_TEXT_REQUIRED) {
@@ -267,6 +301,11 @@ static void print_layouts(void) {
         snprintf(msg, sizeof(msg), "%-22s %3dx%-3d cards x%d y%d/%d %dx%d  status y%d w%d  title %s  pills %s",
                  p.name, p.w, p.h, L.card[0].x, L.card[0].y, L.card[1].y, L.card[0].w, L.card[0].h,
                  L.status_y, L.status_w, L.title_font[0] ? "yes" : "hidden", L.pills[0]);
+        TEST_MESSAGE(msg);
+        const Layout::Split& S = L.split;
+        snprintf(msg, sizeof(msg), "%-22s split halves y%d/%d h%d  rows y%d/%d h%d  label %d  resets %s  pills %s",
+                 "", S.half[0].y, S.half[1].y, S.half[0].h, S.row_y[0], S.row_y[1], S.row_h,
+                 line_h(S.label_font), S.reset_font ? "yes" : "no", S.pills[0]);
         TEST_MESSAGE(msg);
     }
 }

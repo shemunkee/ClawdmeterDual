@@ -2,6 +2,7 @@
 #include "ui_text.h"
 #include <math.h>
 #include <stdio.h>
+#include <initializer_list>
 
 LV_FONT_DECLARE(font_tiempos_56);
 LV_FONT_DECLARE(font_tiempos_34);
@@ -311,6 +312,85 @@ static void fit_period(Layout& L) {
     L.period_font = L.reset_font;
 }
 
+// ─── Two accounts at once ────────────────────────────────────────────────────
+
+// Type the split halves step down through: label, row, reset line.
+struct SplitType { const lv_font_t *label, *row, *reset; };
+static const SplitType SPLIT_TYPES[] = {
+    { &font_styrene_24, &font_styrene_24, &font_styrene_16 },
+    { &font_styrene_20, &font_styrene_20, &font_styrene_14 },
+    { &font_styrene_16, &font_styrene_16, &font_styrene_12 },
+    { &font_styrene_14, &font_styrene_14, &font_styrene_12 },
+    { &font_styrene_12, &font_styrene_12, &font_styrene_12 },
+};
+#define SPLIT_GAP     LAYOUT_SPLIT_GAP   // between the label and the rows, and the row's columns
+#define SPLIT_MIN_BAR 24  // narrowest a row's bar may get (135 px panels need it)
+
+// Reset lines a split row shows (format_reset_time in ui.cpp, and the
+// spend-capped account's caption).
+static const char* const SPLIT_RESET_WIDEST[] = {
+    "Resets in 23h 59m", "Resets in 6d 23h", "Not started", "of spending limit", "No data",
+};
+
+// One candidate: type `t`, pill set `pills`, with or without reset lines.
+// False when it doesn't fit the halves.
+static bool split_try(Layout::Split& s, const SplitType& t, const char* const* pills, bool resets) {
+    const int16_t inner_w = s.half[0].w - 2 * s.pad_x;
+    const int16_t inner_h = (s.half[0].h < s.half[1].h ? s.half[0].h : s.half[1].h) - 2 * s.pad_y;
+    const int16_t row_h = line_h(t.row);
+    const int16_t reset_h = resets ? line_h(t.reset) : 0;
+    const int16_t need = line_h(t.label) + 2 * SPLIT_GAP + 2 * (row_h + reset_h);
+    if (need > inner_h) return false;
+
+    const char* const usage_pills[] = { pills[0], pills[1], pills[2] };
+    s.pill_pad_x = row_h / 4;
+    s.pill_w = widest(t.row, usage_pills, 3) + 2 * s.pill_pad_x;
+    s.pct_w = layout_text_width(t.row, "100%");
+    const int16_t bar_w = inner_w - s.pill_w - s.pct_w - 2 * SPLIT_GAP;
+    if (bar_w < SPLIT_MIN_BAR) return false;
+    // A reset line starts under the bar and may run to the card's edge.
+    const int n = sizeof(SPLIT_RESET_WIDEST) / sizeof(SPLIT_RESET_WIDEST[0]);
+    if (resets && widest(t.reset, SPLIT_RESET_WIDEST, n) > inner_w - s.pill_w - SPLIT_GAP) return false;
+
+    s.label_font = t.label;
+    s.row_font = t.row;
+    s.reset_font = resets ? t.reset : nullptr;
+    s.pills = pills;
+    s.row_h = row_h;
+    s.bar_h = row_h / 2 > 6 ? row_h / 2 : 6;
+    // The spare height goes evenly above each row.
+    const int16_t gap = SPLIT_GAP + (inner_h - need) / 2;
+    s.row_y[0] = line_h(t.label) + gap;
+    s.row_y[1] = s.row_y[0] + row_h + reset_h + gap;
+    return true;
+}
+
+// The halves fill the cards' area with the cards' gap between them. The
+// largest type that fits with reset lines wins, then the largest without
+// (small panels); long pill labels where they fit beside the bar.
+static void fit_split(Layout& L) {
+    Layout::Split& s = L.split;
+    const int16_t top = L.card[0].y, h = stack_bottom(L) - top;
+    int16_t gap = L.card[1].y - (L.card[0].y + L.card[0].h);
+    if (gap < 4) gap = 4;
+    const int16_t h0 = (h - gap) / 2;
+    s.half[0] = { L.card[0].x, top, L.card[0].w, h0 };
+    s.half[1] = { L.card[0].x, (int16_t)(top + h0 + gap), L.card[0].w, (int16_t)(h - h0 - gap) };
+    s.pad_x = L.pad_x;
+    s.pad_y = L.pad_y < 8 ? L.pad_y : 8;
+    for (bool resets : { true, false })
+        for (const SplitType& t : SPLIT_TYPES)
+            for (const char* const* pills : { PILL_TEXT, PILL_TEXT_SHORT })
+                if (split_try(s, t, pills, resets)) return;
+    // Nothing fits: the smallest type, squeezed (test_layout flags it).
+    s.pad_y = 2;
+    if (!split_try(s, SPLIT_TYPES[4], PILL_TEXT_SHORT, false)) {
+        s.label_font = s.row_font = SPLIT_TYPES[4].row;
+        s.reset_font = nullptr;
+        s.pills = PILL_TEXT_SHORT;
+    }
+}
+
 // ─── Rectangular panels: top-down ────────────────────────────────────────────
 
 // The design as tuned: header at the top, cards from d.top, the status line
@@ -469,5 +549,6 @@ Layout layout_compute(const LayoutShape& shape) {
     fit_title(L, *c);
     fit_pairing(L, *d);
     fit_period(L);
+    fit_split(L);
     return L;
 }

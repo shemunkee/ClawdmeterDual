@@ -20,7 +20,7 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::PathBuf;
 
-use clawdmeter_core::Paths;
+use clawdmeter_core::{Paths, UsageReading};
 use serde::{Deserialize, Serialize};
 
 use crate::art::TrayState;
@@ -129,6 +129,49 @@ pub struct StatusSnapshot {
     /// Unix seconds the weekly window resets (`None`: unknown).
     #[serde(default)]
     pub week_resets_at: Option<i64>,
+    /// Two accounts on the device (`split_accounts`): top, then bottom.
+    /// Empty: one account, shown by the fields above.
+    #[serde(default)]
+    pub split: Vec<AccountMeters>,
+}
+
+/// One half of a split device, for the Overview page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountMeters {
+    /// Its name on the device (`account_labels`).
+    pub label: String,
+    /// It has numbers; otherwise it shows "no data", never zeros.
+    pub ok: bool,
+    /// A spend-capped account: `session_pct` is the spend %, no weekly.
+    pub spend_only: bool,
+    /// Session % (spend % when spend-capped).
+    pub session_pct: Option<u32>,
+    /// Unix seconds the session (or spend period) resets.
+    pub session_resets_at: Option<i64>,
+    /// Weekly %.
+    pub week_pct: Option<u32>,
+    /// Unix seconds the week resets.
+    pub week_resets_at: Option<i64>,
+}
+
+impl AccountMeters {
+    fn new(label: &str, r: Option<&UsageReading>) -> Self {
+        let Some(r) = r else { return AccountMeters { label: label.to_owned(), ..Default::default() } };
+        let ts = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.timestamp());
+        AccountMeters {
+            label: label.to_owned(),
+            ok: true,
+            spend_only: r.is_spend_only(),
+            session_pct: Some(r.session_pct()),
+            session_resets_at: ts(if r.is_spend_only() {
+                r.spend.as_ref().and_then(|s| s.resets_at)
+            } else {
+                r.session.as_ref().and_then(|w| w.resets_at)
+            }),
+            week_pct: r.week.as_ref().map(|w| w.pct),
+            week_resets_at: ts(r.week.as_ref().and_then(|w| w.resets_at)),
+        }
+    }
 }
 
 impl StatusSnapshot {
@@ -184,6 +227,16 @@ impl StatusSnapshot {
                 .and_then(|w| w.resets_at)
                 .map(|t| t.timestamp()),
             week_resets_at: reading.and_then(|r| r.week.as_ref()).and_then(|w| w.resets_at).map(|t| t.timestamp()),
+            split: e
+                .split
+                .as_ref()
+                .map(|sp| {
+                    vec![
+                        AccountMeters::new(&sp.top_label, reading),
+                        AccountMeters::new(&sp.bottom_label, sp.bottom.as_ref()),
+                    ]
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -440,7 +493,7 @@ mod tests {
         assert!(!window_open_elsewhere(&paths));
         let _ = fs::remove_dir_all(dir);
     }
-    use clawdmeter_core::usage::{UsageReading, Window};
+    use clawdmeter_core::usage::Window;
     use clawdmeter_core::EngineStatus;
 
     fn status(link: LinkState, reading: bool, last_write: Option<i64>) -> Status {
@@ -457,6 +510,23 @@ mod tests {
             last_write_at: last_write,
             claude: None,
         }
+    }
+
+    #[test]
+    fn split_snapshot_has_both_halves() {
+        let mut s = status(connected(), true, Some(990));
+        assert!(StatusSnapshot::from_status(&s, 1_000).split.is_empty());
+        s.engine.split = Some(clawdmeter_core::engine::SplitStatus {
+            top_label: "Personal".into(),
+            bottom_label: "Work".into(),
+            bottom: None,
+        });
+        let snap = StatusSnapshot::from_status(&s, 1_000);
+        assert_eq!(snap.split.len(), 2);
+        assert_eq!((snap.split[0].label.as_str(), snap.split[0].ok), ("Personal", true));
+        assert_eq!(snap.split[0].session_pct, Some(3));
+        // No reading: "no data", not zeros.
+        assert_eq!((snap.split[1].label.as_str(), snap.split[1].ok, snap.split[1].session_pct), ("Work", false, None));
     }
 
     fn connected() -> LinkState {

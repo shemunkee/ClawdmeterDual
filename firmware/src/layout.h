@@ -52,6 +52,25 @@ struct Layout {
     const lv_font_t* pace_font;
     const char* const* pills;        // PILL_TEXT or PILL_TEXT_SHORT (ui_text.h)
 
+    // Two accounts at once (UsageData.split): the cards' area cut into two
+    // halves, one per account. Each half has its name on top, then a row per
+    // window (pill, bar, percentage), with the reset line under each row
+    // where there's room.
+    struct Split {
+        LayoutRect half[2];
+        int16_t pad_x, pad_y;
+        const lv_font_t* label_font;
+        const lv_font_t* row_font;   // pills and percentages
+        const lv_font_t* reset_font; // NULL: no room, rows without reset lines
+        const char* const* pills;    // PILL_TEXT or PILL_TEXT_SHORT
+        int16_t pill_pad_x;
+        int16_t pill_w;              // pill column, the same for both rows
+        int16_t pct_w;               // percentage column, right-aligned
+        int16_t row_y[2];            // row tops inside the padding
+        int16_t row_h;               // a row's line height
+        int16_t bar_h;               // centred on the row's line
+    } split;
+
     // Status line, centred at the bottom.
     const lv_font_t* status_font;
     int16_t status_y;                // bottom edge offset from the panel's bottom (<= 0)
@@ -67,6 +86,9 @@ struct Layout {
 };
 
 Layout layout_compute(const LayoutShape& shape);
+
+// Split rows: the gap between the pill, the bar and the percentage.
+#define LAYOUT_SPLIT_GAP 4
 
 // Corner icon sizes the layout plans with (ui.cpp checks them against the art).
 #define LAYOUT_LOGO_SLOT        80   // logo.h LOGO_HEIGHT

@@ -8,6 +8,8 @@ static bool     have_seq   = false;
 static uint32_t last_seq   = 0;
 static char     last_event = '\0';
 static int      sessions   = -1;
+static char     cur_event  = '\0';   // latest event, the baseline one included
+static uint32_t cur_event_ms = 0;    // when it arrived
 
 void signals_clear(void) {
     hooks_seen = false;
@@ -15,6 +17,8 @@ void signals_clear(void) {
     last_seq = 0;
     last_event = '\0';
     sessions = -1;
+    cur_event = '\0';
+    cur_event_ms = 0;
     usage_rate_clear();
 }
 
@@ -38,6 +42,10 @@ SignalsUpdate signals_ingest_at(const UsageData* d, uint32_t now_ms) {
 
     if (d->has_event_seq) {
         hooks_seen = true;
+        if (!have_seq || d->event_seq != last_seq) {
+            cur_event = d->event;
+            cur_event_ms = now_ms;
+        }
         if (!have_seq) {
             have_seq = true;                 // baseline, don't react
             last_seq = d->event_seq;
@@ -69,3 +77,9 @@ bool     signals_hooks_seen(void) { return hooks_seen; }
 int      signals_activity_at(uint32_t now_ms) { return usage_rate_activity_at(now_ms); }
 int      signals_sessions(void) { return sessions; }
 char     signals_last_event(void) { return last_event; }
+
+bool signals_working_at(uint32_t now_ms) {
+    if (signals_activity_at(now_ms) > 0) return true;
+    const bool prompt_open = cur_event == 'p' || cur_event == 'b';
+    return prompt_open && now_ms - cur_event_ms < SIGNALS_PROMPT_OPEN_MS;
+}

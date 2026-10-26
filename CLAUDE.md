@@ -79,7 +79,8 @@ The app writes one complete JSON object per write to RX
 500. Every write is a full update. Fields and UUIDs: `docs/protocol.md`.
 
 - Usage: `s sr w wr st acct tp pd rd t tf c ok`. `sr`/`wr` = -1 means not
-  started or unknown. `acct:"ent"` is a spend-capped account: `s` is spend %,
+  started or unknown. Two accounts at once (`split_accounts`): `l` names the
+  top account, `s2 sr2 w2 wr2 acct2 ok2 l2` are the bottom one. `acct:"ent"` is a spend-capped account: `s` is spend %,
   `tp/pd/rd` the billing period. `{"ok":false}` means no data.
 - Attention: `b` (alert chime), `m` (ASCII message), `x` (clear).
 - Fast clock: `a` (activity 0–3), `e` + `es` (event `p`/`s`/`b` and its

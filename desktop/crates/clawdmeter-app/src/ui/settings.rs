@@ -718,7 +718,8 @@ impl SettingsView {
             .child(para(
                 t,
                 "The default Claude Code folder is ~/.claude. Add a config folder for each other account you want \
-                 to monitor. The device follows the account whose session usage increased most recently.",
+                 to monitor. The device follows the account whose session usage increased most recently, or shows \
+                 the first two at once.",
             ))
             .when_some(self.snap.as_ref(), |d, snap| {
                 d.child(caption(
@@ -734,6 +735,25 @@ impl SettingsView {
         let active = self.snap.as_ref().and_then(|s| s.account.clone());
         let errors: Vec<ipc::AccountError> = self.snap.as_ref().map(|s| s.errors.clone()).unwrap_or_default();
         let only_one = self.settings.config_dirs.len() <= 1;
+        let split = self.settings.split_active();
+        let me = cx.entity().downgrade();
+        let split_on = self.settings.split_accounts;
+        pane = pane.child(field(
+            t,
+            "Show two accounts on the device",
+            if only_one {
+                "Add a second account folder to show two at once, top and bottom."
+            } else {
+                "The first account fills the top half of the usage screen and the second the bottom, each with its \
+                 name. Names come from account_labels in the config file, else the folder's name."
+            },
+            toggle(t, "split-accounts", split_on, !only_one, move |_, _, cx| {
+                let _ = me.update(cx, |v, cx| {
+                    v.save(|s, _| s.split_accounts = !split_on);
+                    cx.notify();
+                });
+            }),
+        ));
         let mut list = div().flex().flex_col().rounded(px(R_M)).border_1().border_color(t.line);
         for (i, d) in self.settings.config_dirs.clone().into_iter().enumerate() {
             let ds = d.display().to_string();
@@ -743,12 +763,16 @@ impl SettingsView {
                 // Transient errors retry on their own; the rest need the user.
                 (Some(e), _) if e.retrying => (e.message.clone(), Some(pill(t, "Retrying", Tone::Warn))),
                 (Some(e), _) => (e.message.clone(), Some(pill(t, "Needs attention", Tone::Bad))),
+                (None, _) if split && i < 2 => {
+                    (String::new(), Some(pill(t, if i == 0 { "Top half" } else { "Bottom half" }, Tone::Ok)))
+                }
+                (None, _) if split => ("Not shown: only the first two fit".to_string(), None),
                 (None, true) => (String::new(), Some(pill(t, "On device", Tone::Ok))),
                 (None, false) if self.snap.is_some() => ("Not selected for the device".to_string(), None),
                 (None, false) => ("Start Clawdmeter to check usage.".to_string(), None),
             };
+            let label = self.settings.account_label(i);
             let me = cx.entity().downgrade();
-            let dir = d.clone();
             list = list.child(
                 div()
                     .flex()
@@ -764,6 +788,7 @@ impl SettingsView {
                             .flex_1()
                             .min_w_0()
                             .gap(px(2.))
+                            .when(split, |d| d.child(div().text_size(px(13.5)).child(label)))
                             .child(div().font_family(FONT_MONO).text_size(px(13.)).child(tilde(&ds, &self.paths.home)))
                             .when(!meta.is_empty(), |d| {
                                 d.child(div().text_size(px(12.5)).text_color(t.mute).child(meta))
@@ -777,9 +802,8 @@ impl SettingsView {
                         ButtonKind::Small,
                         !only_one,
                         move |_, _, cx| {
-                            let dir = dir.clone();
                             let _ = me.update(cx, |v, cx| {
-                                v.save(|s, _| s.config_dirs.retain(|x| *x != dir));
+                                v.save(|s, _| s.remove_account(i));
                                 cx.notify();
                             });
                         },

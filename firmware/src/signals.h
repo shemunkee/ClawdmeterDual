@@ -47,6 +47,13 @@ int      signals_activity_at(uint32_t now_ms);    // 0-3, -1 unknown/expired
 int      signals_sessions(void);                  // -1 unknown
 char     signals_last_event(void);                // '\0' none since boot
 
+// Claude is working: tool calls in the last minute (`a` > 0), or a prompt
+// with no Stop after it within SIGNALS_PROMPT_OPEN_MS (the app's
+// `Activity::working`). False without hooks.
+#define SIGNALS_PROMPT_OPEN_MS (10UL * 60UL * 1000UL)
+bool     signals_working_at(uint32_t now_ms);
+
 // ---- millis() wrappers (usage_rate_clock.cpp) ----
 SignalsUpdate signals_ingest(const UsageData* d);
 int      signals_activity(void);
+bool     signals_working(void);
